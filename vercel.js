@@ -1,16 +1,8 @@
 {
   "version": 2,
-  "name": "auto-handle",
-  "functions": {
-    "api/index.js": {
-      "maxDuration": 60
-    }
-  },
+  "name": "vercel-xhttp-relay",
   "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/api/index"
-    }
+    { "source": "/(.*)", "destination": "/api/index" }
   ],
   "trailingSlash": false
 }
