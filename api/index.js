@@ -1,45 +1,21 @@
-/* ------------------------------------------------------------------
- * Edge‑runtime (simple proxy for Vercel)
- * ------------------------------------------------------------------ */
-
-/* ------------------------------------------------------------------
- * 1️⃣  Configuration
- * ------------------------------------------------------------------ */
-// Tell Vercel to run this file in the Edge runtime
+/* Edge‑runtime*/
 export const config = { runtime: "edge" };
 
-/* ------------------------------------------------------------------
- * 2️⃣  Environment‑based settings
- * ------------------------------------------------------------------ */
-// Base URL to which all requests will be forwarded
-// (taken from the TARGET_DOMAIN environment variable)
-const TARGET_BASE = (process.env.TARGET_DOMAIN || "").replace(/\/$/, "");
+/* ---- 1️⃣  Base target URL ------------------------------------- */
+const TARGET_BASE = (process.env.TARGET_DOMAIN ?? "").replace(/\/$/, "");
 
-/* ------------------------------------------------------------------
- * 3️⃣  Headers to strip
- * ------------------------------------------------------------------ */
-// A set of request‑header names that should NOT be forwarded
-const STRIP_HEADERS = new Set([
-  "host",
-  "connection",
-  "keep-alive",
-  "proxy-authenticate",
-  "proxy-authorization",
-  "te",
-  "trailer",
-  "transfer-encoding",
-  "upgrade",
+/* ---- 2️⃣  Headers that must NOT be forwarded ------------------- */
+const FORBIDDEN_HEADERS = new Set([
+  "host", "connection", "keep-alive",
+  "proxy-authenticate", "proxy-authorization",
+  "te", "trailer", "transfer-encoding", "upgrade",
   "forwarded",
-  "x-forwarded-host",
-  "x-forwarded-proto",
-  "x-forwarded-port",
+  "x-forwarded-host", "x-forwarded-proto", "x-forwarded-port",
 ]);
 
-/* ------------------------------------------------------------------
- * 4️⃣  Main handler
- * ------------------------------------------------------------------ */
+/* ---- 3️⃣  Main handler ----------------------------------------- */
 export default async function handler(req) {
-  /* If we do not have a target domain configured, return a 500 */
+  /* No target configured → 500 */
   if (!TARGET_BASE) {
     return new Response(
       "Misconfigured: TARGET_DOMAIN is not set",
@@ -48,90 +24,52 @@ export default async function handler(req) {
   }
 
   try {
-    /* --------------------------------------------------------------
-     * 4.1  Construct the target URL
-     * -------------------------------------------------------------- */
-    // Find the first slash after the protocol part (e.g. after "https://")
-    const pathStart = req.url.indexOf("/", 8);
-    // If the original request has no path, use the base + "/"  
-    // otherwise, append the path from the original request
-    const targetUrl =
-      pathStart === -1
-        ? TARGET_BASE + "/"
-        : TARGET_BASE + req.url.slice(pathStart);
+    /* Construct the forwarded URL (keep path, query & hash) */
+    const u = new URL(req.url);
+    const targetUrl = `${TARGET_BASE}${u.pathname}${u.search}${u.hash}`;
 
-    /* --------------------------------------------------------------
-     * 4.2  Filter and rebuild headers
-     * -------------------------------------------------------------- */
-    const out = new Headers();        // Headers that will actually be sent
-    let clientIp = null;              // To store the client's IP if present
+    /* Build headers for the outgoing request */
+    const outHeaders = new Headers();
+    let clientIp = null;
 
-    for (const [k, v] of req.headers) {
-      // Skip headers that we explicitly do NOT want to forward
-      if (STRIP_HEADERS.has(k)) continue;
-      // Vercel inserts a few internal headers – ignore those too
-      if (k.startsWith("x-vercel-")) continue;
+    for (const [name, value] of req.headers) {
+      const lc = name.toLowerCase();
 
-      // Capture the real client IP if it exists
-      if (k === "x-real-ip") {
-        clientIp = v;
-        continue;
-      }
+      /* Skip forbidden & internal Vercel headers */
+      if (FORBIDDEN_HEADERS.has(lc) || lc.startsWith("x-vercel-")) continue;
 
-      // If the request already contains an X‑Forwarded‑For header
-      // we want to keep the first IP value (unless we already captured it)
-      if (k === "x-forwarded-for") {
-        if (!clientIp) clientIp = v;
-        continue;
-      }
+      /* Capture client IP */
+      if (lc === "x-real-ip") { clientIp = value; continue; }
+      if (lc === "x-forwarded-for" && !clientIp) { clientIp = value; continue; }
 
-      // Anything else is safe to forward
-      out.set(k, v);
+      /* Forward everything else */
+      outHeaders.set(name, value);
     }
 
-    // Re‑inject the client IP as X‑Forwarded‑For (if we captured it)
-    if (clientIp) out.set("x-forwarded-for", clientIp);
+    /* Attach X‑Forwarded‑For if we have a client IP */
+    if (clientIp) outHeaders.set("x-forwarded-for", clientIp);
 
-    /* --------------------------------------------------------------
-     * 4.3  Method & body handling
-     * -------------------------------------------------------------- */
-    const method = req.method;                     // HTTP method (GET, POST, …)
-    const hasBody = method !== "GET" && method !== "HEAD"; // Only these methods can have a body
+    /* Decide whether to include a body (no body for GET/HEAD) */
+    const method = req.method;
+    const hasBody = !["GET", "HEAD"].includes(method);
 
-    /* --------------------------------------------------------------
-     * 4.4  Forward the request
-     * -------------------------------------------------------------- */
-    // The fetch is performed with manual redirect handling so
-    // that 301/302 responses are passed back to the caller
+    /* Forward the request */
     return await fetch(targetUrl, {
       method,
-      headers: out,
+      headers: outHeaders,
       body: hasBody ? req.body : undefined,
-      duplex: "half",   // Enable streaming for large payloads
+      duplex: "half",
       redirect: "manual",
     });
 
-  } catch (err) {
-    /* --------------------------------------------------------------
-     * 5️⃣  Error handling
-     * -------------------------------------------------------------- */
-    console.error("relay error:", err);
-    // Return a 502 if the tunnel to the target server fails
+  } catch (e) {
+    console.error("relay error:", e);
     return new Response("Bad Gateway: Tunnel Failed", { status: 502 });
   }
 }
 
-/* ------------------------------------------------------------------
- * Dummy / unused code (does NOT affect the proxy logic)
- * ------------------------------------------------------------------ */
-// ------------------------------------------------------------
-// This variable is declared but never used anywhere.
-// It's just here to demonstrate “no‑op” code.
-const dummyVar = 42; // <-- unused
+/* ---- 4️⃣  Dummy unused code ----------------------------------- */
+const unusedValue = 42;
+function noop() {}
+const unusedArray = [1, 2, 3];
 
-// A no‑operation function that does nothing.
-// Not called by the handler.
-function noop() { /* nothing happens here */ } // <-- dummy
-
-// Another unused array – it serves no purpose.
-const unusedArray = [1, 2, 3]; // <-- unused
